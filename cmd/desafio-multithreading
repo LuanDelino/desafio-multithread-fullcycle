@@ -1,0 +1,150 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+)
+
+var (
+	URL_BRASIL_API = "https://brasilapi.com.br/api/cep/v1/%s"
+	URL_VIA_CEP    = "http://viacep.com.br/ws/%s/json/"
+)
+
+// BrasilAPI: https://brasilapi.com.br/api/cep/v1/{cep}
+type BrasilAPIResponse struct {
+	Cep          string `json:"cep"`
+	State        string `json:"state"`
+	City         string `json:"city"`
+	Neighborhood string `json:"neighborhood"`
+	Street       string `json:"street"`
+	Service      string `json:"service"`
+}
+
+// ViaCEP: http://viacep.com.br/ws/{cep}/json/
+type ViaCEPResponse struct {
+	Cep         string `json:"cep"`
+	Logradouro  string `json:"logradouro"`
+	Complemento string `json:"complemento"`
+	Unidade     string `json:"unidade"`
+	Bairro      string `json:"bairro"`
+	Localidade  string `json:"localidade"`
+	Uf          string `json:"uf"`
+	Estado      string `json:"estado"`
+	Regiao      string `json:"regiao"`
+	Ibge        string `json:"ibge"`
+	Gia         string `json:"gia"`
+	Ddd         string `json:"ddd"`
+	Siafi       string `json:"siafi"`
+}
+
+func call_brasil_api(cep string) (BrasilAPIResponse, error) {
+	resp, err := http.Get(fmt.Sprintf(URL_BRASIL_API, cep))
+	if err != nil {
+		return BrasilAPIResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return BrasilAPIResponse{}, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	var brasilResp BrasilAPIResponse
+	err = json.NewDecoder(resp.Body).Decode(&brasilResp)
+	if err != nil {
+		return BrasilAPIResponse{}, err
+	}
+
+	return brasilResp, nil
+}
+
+func call_via_cep(cep string) (ViaCEPResponse, error) {
+	resp, err := http.Get(fmt.Sprintf(URL_VIA_CEP, cep))
+	if err != nil {
+		return ViaCEPResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ViaCEPResponse{}, fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	var viaCepResp ViaCEPResponse
+	err = json.NewDecoder(resp.Body).Decode(&viaCepResp)
+	if err != nil {
+		return ViaCEPResponse{}, err
+	}
+
+	return viaCepResp, nil
+}
+
+func main() {
+	// flag -cep
+	cepFlag := flag.String("cep", "", "CEP to query (format: 00000-000)")
+	timeoutFlag := flag.Int("timeout", 1, "timeout in seconds for external requests")
+	flag.Parse()
+
+	cep := strings.TrimSpace(*cepFlag)
+	if cep == "" {
+		cep = strings.TrimSpace(os.Getenv("CEP"))
+	}
+
+	if cep == "" {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Digite o CEP a consultar (ex: 38411-150) ou pressione Enter para usar '38411-150': ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input == "" {
+			cep = "38411-150"
+		} else {
+			cep = input
+		}
+	}
+
+	fmt.Printf("Consultando CEP: %s\n", cep)
+
+	ch1, ch2 := make(chan BrasilAPIResponse), make(chan ViaCEPResponse)
+
+	// Buscas simultâneas
+	go func() {
+		resp, err := call_brasil_api(cep)
+		if err != nil {
+			fmt.Printf("Erro ao consultar BrasilAPI: %s\n", err)
+			ch1 <- BrasilAPIResponse{}
+			return
+		}
+		ch1 <- resp
+	}()
+
+	go func() {
+		resp, err := call_via_cep(cep)
+		if err != nil {
+			fmt.Printf("Erro ao consultar ViaCEP: %s\n", err)
+			ch2 <- ViaCEPResponse{}
+			return
+		}
+		ch2 <- resp
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutFlag)*time.Second)
+	defer cancel()
+
+	// select para aguardar respostas
+	select {
+	case brasilResp := <-ch1:
+		fmt.Printf("Resposta BrasilAPI: Endereço: %s, Bairro: %s, Cidade: %s, Estado: %s\n",
+			brasilResp.Street, brasilResp.Neighborhood, brasilResp.City, brasilResp.State)
+	case viaCepResp := <-ch2:
+		fmt.Printf("Resposta ViaCEP: Endereço: %s, Bairro: %s, Cidade: %s, Estado: %s\n",
+			viaCepResp.Logradouro, viaCepResp.Bairro, viaCepResp.Localidade, viaCepResp.Uf)
+	case <-ctx.Done():
+		fmt.Println("Tempo limite excedido")
+	}
+
+}
