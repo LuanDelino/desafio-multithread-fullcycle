@@ -87,7 +87,6 @@ func call_via_cep(cep string) (ViaCEPResponse, error) {
 func main() {
 	// flag -cep
 	cepFlag := flag.String("cep", "", "CEP to query (format: 00000-000)")
-	timeoutFlag := flag.Int("timeout", 1, "timeout in seconds for external requests")
 	flag.Parse()
 
 	cep := strings.TrimSpace(*cepFlag)
@@ -132,7 +131,8 @@ func main() {
 		ch2 <- resp
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutFlag)*time.Second)
+	// fixed timeout of 1 second for external requests
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	// select para aguardar respostas
